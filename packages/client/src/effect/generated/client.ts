@@ -269,6 +269,14 @@ import type {
   ExperimentalArtifactsDeleteOutput,
   ExperimentalJobListInput,
   ExperimentalJobListOutput,
+  ExperimentalKvListInput,
+  ExperimentalKvListOutput,
+  ExperimentalKvGetInput,
+  ExperimentalKvGetOutput,
+  ExperimentalKvSetInput,
+  ExperimentalKvSetOutput,
+  ExperimentalKvDeleteInput,
+  ExperimentalKvDeleteOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -1715,6 +1723,34 @@ const EndpointExperimentalJobList = (raw: RawClient["server.experimental"]) => (
     ),
   )
 
+const EndpointExperimentalKvList = (raw: RawClient["server.experimental"]) => (input: ExperimentalKvListInput) =>
+  preserveEffect<ExperimentalKvListOutput>()(
+    raw["kv.list"]({ params: { space: input["space"] }, query: { after: input["after"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
+const EndpointExperimentalKvGet = (raw: RawClient["server.experimental"]) => (input: ExperimentalKvGetInput) =>
+  preserveEffect<ExperimentalKvGetOutput>()(
+    raw["kv.get"]({ params: { space: input["space"], key: input["key"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
+const EndpointExperimentalKvSet = (raw: RawClient["server.experimental"]) => (input: ExperimentalKvSetInput) =>
+  preserveEffect<ExperimentalKvSetOutput>()(
+    raw["kv.set"]({ params: { space: input["space"], key: input["key"] }, payload: { value: input["value"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
+const EndpointExperimentalKvDelete = (raw: RawClient["server.experimental"]) => (input: ExperimentalKvDeleteInput) =>
+  preserveEffect<ExperimentalKvDeleteOutput>()(
+    raw["kv.delete"]({ params: { space: input["space"], key: input["key"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
   persistentPty: {
     read: EndpointExperimentalPersistentPtyRead(raw),
@@ -1745,6 +1781,12 @@ const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
     delete: EndpointExperimentalArtifactsDelete(raw),
   },
   job: { list: EndpointExperimentalJobList(raw) },
+  kv: {
+    list: EndpointExperimentalKvList(raw),
+    get: EndpointExperimentalKvGet(raw),
+    set: EndpointExperimentalKvSet(raw),
+    delete: EndpointExperimentalKvDelete(raw),
+  },
 })
 
 const EndpointShellList = (raw: RawClient["server.shell"]) => (input?: ShellListInput) =>

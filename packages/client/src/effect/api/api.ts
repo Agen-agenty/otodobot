@@ -2154,6 +2154,7 @@ export type EventSubscribeInput = {
         | "form.cancelled"
         | "websearch.updated"
         | "artifact.updated"
+        | "experimental.kv.updated"
         | "session.status"
         | "session.idle"
         | "tui.prompt.append"
@@ -2526,6 +2527,42 @@ export type ExperimentalJobListOperation<E = never> = (
   input?: ExperimentalJobListInput,
 ) => Effect.Effect<ExperimentalJobListOutput, E>
 
+export type ExperimentalKvListInput = { readonly space: string; readonly after?: string | undefined }
+export type ExperimentalKvListOutput = {
+  readonly entries: ReadonlyArray<{
+    readonly key: string
+    readonly value: string | number | boolean | ReadonlyArray<Schema.Json> | { readonly [x: string]: Schema.Json }
+  }>
+  readonly next?: string | undefined
+}
+export type ExperimentalKvListOperation<E = never> = (
+  input: ExperimentalKvListInput,
+) => Effect.Effect<ExperimentalKvListOutput, E>
+
+export type ExperimentalKvGetInput = { readonly space: string; readonly key: string }
+export type ExperimentalKvGetOutput =
+  | (string | number | boolean | ReadonlyArray<Schema.Json> | { readonly [x: string]: Schema.Json })
+  | null
+export type ExperimentalKvGetOperation<E = never> = (
+  input: ExperimentalKvGetInput,
+) => Effect.Effect<ExperimentalKvGetOutput, E>
+
+export type ExperimentalKvSetInput = {
+  readonly space: string
+  readonly key: string
+  readonly value: string | number | boolean | ReadonlyArray<Schema.Json> | { readonly [x: string]: Schema.Json }
+}
+export type ExperimentalKvSetOutput = void
+export type ExperimentalKvSetOperation<E = never> = (
+  input: ExperimentalKvSetInput,
+) => Effect.Effect<ExperimentalKvSetOutput, E>
+
+export type ExperimentalKvDeleteInput = { readonly space: string; readonly key: string }
+export type ExperimentalKvDeleteOutput = void
+export type ExperimentalKvDeleteOperation<E = never> = (
+  input: ExperimentalKvDeleteInput,
+) => Effect.Effect<ExperimentalKvDeleteOutput, E>
+
 export interface ExperimentalApi<E = never> {
   readonly persistentPty: {
     readonly read: ExperimentalPersistentPtyReadOperation<E>
@@ -2556,6 +2593,12 @@ export interface ExperimentalApi<E = never> {
     readonly delete: ExperimentalArtifactsDeleteOperation<E>
   }
   readonly job: { readonly list: ExperimentalJobListOperation<E> }
+  readonly kv: {
+    readonly list: ExperimentalKvListOperation<E>
+    readonly get: ExperimentalKvGetOperation<E>
+    readonly set: ExperimentalKvSetOperation<E>
+    readonly delete: ExperimentalKvDeleteOperation<E>
+  }
 }
 
 export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }

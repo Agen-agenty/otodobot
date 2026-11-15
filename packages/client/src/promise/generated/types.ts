@@ -308,6 +308,10 @@ export type FormWhen1 = { key: string; op: "eq" | "neq"; value: string | number 
 
 export type FormValue1 = string | number | boolean | Array<string>
 
+export type ClientKVSpace = string
+
+export type ClientKVKey = string
+
 export type SessionStatus =
   | { type: "idle" }
   | {
@@ -348,6 +352,8 @@ export type ArtifactTime = { created: number; updated: number }
 export type JobStatus = "running" | "completed" | "error" | "cancelled"
 
 export type JobTime = { started: number; completed?: number }
+
+export type ClientKVValue = string | number | boolean | Array<JsonValue> | { [x: string]: JsonValue }
 
 export type ReferenceGitSource = { type: "git"; repository: string; branch?: string }
 
@@ -984,6 +990,8 @@ export type JobImage = {
   path: string
   model: string
 }
+
+export type ClientKVEntry = { key: ClientKVKey; value: ClientKVValue }
 
 export type VcsInfo = { provider?: string; branch: VcsBranch }
 
@@ -2002,6 +2010,15 @@ export type ArtifactUpdated = {
   data: {}
 }
 
+export type ExperimentalKvUpdated = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "experimental.kv.updated"
+  location?: LocationRef
+  data: { space: ClientKVSpace; key: ClientKVKey }
+}
+
 export type SessionStatusUpdated = {
   id: EventID
   created: number
@@ -2274,6 +2291,8 @@ export type ScheduleWhen = ScheduleWhenIn | ScheduleWhenAt | ScheduleWhenEvery |
 export type ArtifactContent = { info: ArtifactInfo; files: { [x: string]: string } }
 
 export type JobInfo = JobShell | JobSubagent | JobImage
+
+export type ClientKVPage = { entries: Array<ClientKVEntry>; next?: ClientKVKey }
 
 export type SessionInboxMove = {
   id: SessionMessageID
@@ -2973,6 +2992,7 @@ export type V2Event =
   | FormCancelled
   | WebsearchUpdated
   | ArtifactUpdated
+  | ExperimentalKvUpdated
   | SessionStatusUpdated
   | SessionIdle
   | TuiPromptAppend
@@ -4472,6 +4492,7 @@ export type EventSubscribeInput = {
         | "form.cancelled"
         | "websearch.updated"
         | "artifact.updated"
+        | "experimental.kv.updated"
         | "session.status"
         | "session.idle"
         | "tui.prompt.append"
@@ -4756,6 +4777,26 @@ export type ExperimentalJobListInput = {
 }
 
 export type ExperimentalJobListOutput = { data: Array<JobInfo> }["data"]
+
+export type ExperimentalKvListInput = { readonly space: string; readonly after?: string | undefined }
+
+export type ExperimentalKvListOutput = { data: ClientKVPage }["data"]
+
+export type ExperimentalKvGetInput = { readonly space: string; readonly key: string }
+
+export type ExperimentalKvGetOutput = { data: ClientKVValue | null }["data"]
+
+export type ExperimentalKvSetInput = {
+  readonly space: string
+  readonly key: string
+  readonly value: string | number | boolean | ReadonlyArray<JsonValue> | { readonly [x: string]: JsonValue }
+}
+
+export type ExperimentalKvSetOutput = void
+
+export type ExperimentalKvDeleteInput = { readonly space: string; readonly key: string }
+
+export type ExperimentalKvDeleteOutput = void
 
 export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
 
