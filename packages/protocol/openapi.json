@@ -10170,7 +10170,9 @@
                     "form.cancelled",
                     "websearch.updated",
                     "artifact.updated",
+                    "experimental.kv.snapshot",
                     "experimental.kv.updated",
+                    "experimental.kv.deleted",
                     "session.status",
                     "session.idle",
                     "tui.prompt.append",
@@ -10282,7 +10284,9 @@
                           "form.cancelled",
                           "websearch.updated",
                           "artifact.updated",
+                          "experimental.kv.snapshot",
                           "experimental.kv.updated",
+                          "experimental.kv.deleted",
                           "session.status",
                           "session.idle",
                           "tui.prompt.append",
@@ -10306,6 +10310,25 @@
                 }
               ],
               "description": "Only send events of these types, plus the initial server.connected event. When omitted, all events are sent."
+            },
+            "required": false
+          },
+          {
+            "name": "experimental.kv",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ClientKV.Space"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientKV.Space"
+                  }
+                }
+              ],
+              "description": "Experimental: after server.connected, send one experimental.kv.snapshot per space, then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated in between. experimental.kv.* events reach only subscribers that request their space, whatever `types` says. Reconnect to get fresh snapshots."
             },
             "required": false
           }
@@ -13480,144 +13503,7 @@
         "summary": "List background jobs"
       }
     },
-    "/api/experimental/kv/{space}": {
-      "get": {
-        "tags": ["experimental"],
-        "operationId": "experimental.kv.list",
-        "parameters": [
-          {
-            "name": "space",
-            "in": "path",
-            "schema": {
-              "$ref": "#/components/schemas/ClientKV.Space"
-            },
-            "required": true
-          },
-          {
-            "name": "after",
-            "in": "query",
-            "schema": {
-              "$ref": "#/components/schemas/ClientKV.Key"
-            },
-            "required": false
-          }
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/ClientKV.Page"
-                    }
-                  },
-                  "required": ["data"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
-                }
-              }
-            }
-          }
-        },
-        "description": "Read a page of up to 1000 entries in a space, ordered by key. Subscribe to `experimental.kv.updated` on /api/event first, then read this snapshot, and read it again after reconnecting. Experimental: may change without compatibility guarantees.",
-        "summary": "List values"
-      }
-    },
     "/api/experimental/kv/{space}/{key}": {
-      "get": {
-        "tags": ["experimental"],
-        "operationId": "experimental.kv.get",
-        "parameters": [
-          {
-            "name": "space",
-            "in": "path",
-            "schema": {
-              "$ref": "#/components/schemas/ClientKV.Space"
-            },
-            "required": true
-          },
-          {
-            "name": "key",
-            "in": "path",
-            "schema": {
-              "$ref": "#/components/schemas/ClientKV.Key"
-            },
-            "required": true
-          }
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/components/schemas/ClientKV.Value"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": ["data"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
-                }
-              }
-            }
-          }
-        },
-        "description": "Read a client-defined value; `data` is null when unset. Experimental: may change without compatibility guarantees.",
-        "summary": "Get value"
-      },
       "put": {
         "tags": ["experimental"],
         "operationId": "experimental.kv.set",
@@ -13665,7 +13551,7 @@
             }
           }
         },
-        "description": "Store a client-defined JSON value, replacing any previous value, then publish `experimental.kv.updated`. The server does not interpret it. Experimental: may change without compatibility guarantees.",
+        "description": "Store a client-defined JSON value, replacing any previous value, and send it to the space's subscribers. The server does not interpret it. Subscribers read values through `experimental.kv` on /api/event. Experimental: may change without compatibility guarantees.",
         "summary": "Set value",
         "requestBody": {
           "content": {
@@ -13732,7 +13618,7 @@
             }
           }
         },
-        "description": "Remove a stored value, then publish `experimental.kv.updated`. Removing an unset key succeeds. Experimental: may change without compatibility guarantees.",
+        "description": "Remove a stored value and tell the space's subscribers. Removing an unset key succeeds. Subscribers read values through `experimental.kv` on /api/event. Experimental: may change without compatibility guarantees.",
         "summary": "Delete value"
       }
     },
@@ -16322,22 +16208,6 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 1024
-      },
-      "ClientKV.Page": {
-        "type": "object",
-        "properties": {
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ClientKV.Entry"
-            }
-          },
-          "next": {
-            "$ref": "#/components/schemas/ClientKV.Key"
-          }
-        },
-        "required": ["entries"],
-        "additionalProperties": false
       },
       "ClientKV.Space": {
         "type": "string",
@@ -25938,7 +25808,13 @@
             "$ref": "#/components/schemas/artifact.updated"
           },
           {
+            "$ref": "#/components/schemas/experimental.kv.snapshot"
+          },
+          {
             "$ref": "#/components/schemas/experimental.kv.updated"
+          },
+          {
+            "$ref": "#/components/schemas/experimental.kv.deleted"
           },
           {
             "$ref": "#/components/schemas/SessionStatusUpdated"
@@ -26688,6 +26564,81 @@
         "required": ["id", "created", "type", "data"],
         "additionalProperties": false
       },
+      "experimental.kv.deleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["experimental.kv.deleted"]
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "space": {
+                "$ref": "#/components/schemas/ClientKV.Space"
+              },
+              "key": {
+                "$ref": "#/components/schemas/ClientKV.Key"
+              }
+            },
+            "required": ["space", "key"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "data"],
+        "additionalProperties": false
+      },
+      "experimental.kv.snapshot": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["experimental.kv.snapshot"]
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "space": {
+                "$ref": "#/components/schemas/ClientKV.Space"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ClientKV.Entry"
+                }
+              }
+            },
+            "required": ["space", "entries"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "data"],
+        "additionalProperties": false
+      },
       "experimental.kv.updated": {
         "type": "object",
         "properties": {
@@ -26715,9 +26666,12 @@
               },
               "key": {
                 "$ref": "#/components/schemas/ClientKV.Key"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ClientKV.Value"
               }
             },
-            "required": ["space", "key"],
+            "required": ["space", "key", "value"],
             "additionalProperties": false
           }
         },

@@ -1,3 +1,4 @@
+import { ClientKV } from "@opencode/schema/client-kv"
 import { Event } from "@opencode/schema/event"
 import { EventManifest } from "@opencode/schema/event-manifest"
 import { Location } from "@opencode/schema/location"
@@ -49,6 +50,10 @@ const query = <const Definitions extends ReadonlyArray<Definition>>(definitions:
     ).annotate({
       description:
         "Only send events of these types, plus the initial server.connected event. When omitted, all events are sent.",
+    }),
+    "experimental.kv": Schema.optional(Schema.ArrayEnsure(ClientKV.Space)).annotate({
+      description:
+        "Experimental: after server.connected, send one experimental.kv.snapshot per space, then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated in between. experimental.kv.* events reach only subscribers that request their space, whatever `types` says. Reconnect to get fresh snapshots.",
     }),
   }).annotate({ identifier: "EventSubscribeQuery" })
 
