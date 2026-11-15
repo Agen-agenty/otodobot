@@ -10171,6 +10171,7 @@
                     "websearch.updated",
                     "artifact.updated",
                     "experimental.kv.snapshot",
+                    "experimental.kv.delta",
                     "experimental.kv.updated",
                     "experimental.kv.deleted",
                     "session.status",
@@ -10285,6 +10286,7 @@
                           "websearch.updated",
                           "artifact.updated",
                           "experimental.kv.snapshot",
+                          "experimental.kv.delta",
                           "experimental.kv.updated",
                           "experimental.kv.deleted",
                           "session.status",
@@ -10319,16 +10321,16 @@
             "schema": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/ClientKV.Space"
+                  "$ref": "#/components/schemas/ClientKV.Subscription"
                 },
                 {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientKV.Space"
+                    "$ref": "#/components/schemas/ClientKV.Subscription"
                   }
                 }
               ],
-              "description": "Experimental: after server.connected, send one experimental.kv.snapshot per space, then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated in between. experimental.kv.* events reach only subscribers that request their space, whatever `types` says. Reconnect to get fresh snapshots."
+              "description": "Experimental: spaces to sync, each as `space` or `space:revision`. After server.connected, sends per space an experimental.kv.delta with the keys changed since that revision when it is one this server issued, otherwise an experimental.kv.snapshot; then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated. experimental.kv.* events reach only subscribers that request their space, whatever `types` says."
             },
             "required": false
           }
@@ -16209,10 +16211,19 @@
         "minLength": 1,
         "maxLength": 1024
       },
+      "ClientKV.Revision": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
       "ClientKV.Space": {
         "type": "string",
         "pattern": "^[A-Za-z0-9._-]{1,128}$",
         "description": "Client-chosen namespace: 1-128 letters, digits, '.', '_' or '-'."
+      },
+      "ClientKV.Subscription": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]{1,128}(:.*)?$"
       },
       "ClientKV.Value": {
         "anyOf": [
@@ -25811,6 +25822,9 @@
             "$ref": "#/components/schemas/experimental.kv.snapshot"
           },
           {
+            "$ref": "#/components/schemas/experimental.kv.delta"
+          },
+          {
             "$ref": "#/components/schemas/experimental.kv.updated"
           },
           {
@@ -26591,9 +26605,60 @@
               },
               "key": {
                 "$ref": "#/components/schemas/ClientKV.Key"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/ClientKV.Revision"
               }
             },
-            "required": ["space", "key"],
+            "required": ["space", "key", "revision"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "data"],
+        "additionalProperties": false
+      },
+      "experimental.kv.delta": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["experimental.kv.delta"]
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "space": {
+                "$ref": "#/components/schemas/ClientKV.Space"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/ClientKV.Revision"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ClientKV.Entry"
+                }
+              },
+              "deleted": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ClientKV.Key"
+                }
+              }
+            },
+            "required": ["space", "revision", "entries", "deleted"],
             "additionalProperties": false
           }
         },
@@ -26625,6 +26690,9 @@
               "space": {
                 "$ref": "#/components/schemas/ClientKV.Space"
               },
+              "revision": {
+                "$ref": "#/components/schemas/ClientKV.Revision"
+              },
               "entries": {
                 "type": "array",
                 "items": {
@@ -26632,7 +26700,7 @@
                 }
               }
             },
-            "required": ["space", "entries"],
+            "required": ["space", "revision", "entries"],
             "additionalProperties": false
           }
         },
@@ -26669,9 +26737,12 @@
               },
               "value": {
                 "$ref": "#/components/schemas/ClientKV.Value"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/ClientKV.Revision"
               }
             },
-            "required": ["space", "key", "value"],
+            "required": ["space", "key", "value", "revision"],
             "additionalProperties": false
           }
         },

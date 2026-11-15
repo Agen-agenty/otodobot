@@ -1,4 +1,3 @@
-import { ClientKV } from "@opencode/schema/client-kv"
 import { Event } from "@opencode/schema/event"
 import { Clock, Effect, Stream } from "effect"
 import { HttpServerResponse } from "effect/http"
@@ -18,20 +17,26 @@ export const EventHandler = HttpApiBuilder.group(Api, "server.event", (handlers)
           type: "server.connected",
           data: {},
         } as const
-        const spaces = Array.from(new Set(ctx.query["experimental.kv"]))
+        const requests = Array.from(
+          new Map((ctx.query["experimental.kv"] ?? []).map(parse).map((request) => [request.space, request])).values(),
+        )
         const output = Stream.unwrap(
           Effect.gen(function* () {
-            if (spaces.length === 0) {
+            if (requests.length === 0) {
               const live = yield* feed.subscribe(ctx.query.types)
               return Stream.make(EventFeed.frame(connected)).pipe(Stream.concat(live))
             }
-            const [live, snapshots] = yield* store.open(spaces, feed.subscribe(ctx.query.types, spaces))
+            const [live, initial] = yield* store.open(
+              requests,
+              feed.subscribe(
+                ctx.query.types,
+                requests.map((request) => request.space),
+              ),
+            )
             const created = yield* Clock.currentTimeMillis
             return Stream.make(
               EventFeed.frame(connected),
-              ...snapshots.map((data) =>
-                EventFeed.frame({ id: Event.ID.create(), created, type: ClientKV.Event.Snapshot.type, data }),
-              ),
+              ...initial.map((item) => EventFeed.frame({ id: Event.ID.create(), created, ...item })),
             ).pipe(Stream.concat(live))
           }),
         )
@@ -51,3 +56,13 @@ export const EventHandler = HttpApiBuilder.group(Api, "server.event", (handlers)
     )
   }),
 )
+
+// `space:revision`; a revision that is not a plain non-negative integer is unusable, so the space gets a snapshot.
+function parse(item: string): ClientKVStore.Request {
+  const index = item.indexOf(":")
+  if (index < 0) return { space: item }
+  const space = item.slice(0, index)
+  const revision = item.slice(index + 1)
+  if (!/^\d+$/u.test(revision) || !Number.isSafeInteger(Number(revision))) return { space }
+  return { space, since: Number(revision) }
+}

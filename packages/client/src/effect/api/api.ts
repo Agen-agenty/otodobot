@@ -2155,6 +2155,7 @@ export type EventSubscribeInput = {
         | "websearch.updated"
         | "artifact.updated"
         | "experimental.kv.snapshot"
+        | "experimental.kv.delta"
         | "experimental.kv.updated"
         | "experimental.kv.deleted"
         | "session.status"

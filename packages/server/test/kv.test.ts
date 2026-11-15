@@ -44,7 +44,7 @@ const subscribe = async (
   }
 }
 
-it.live("streams snapshots and later writes of requested spaces to another client and survives a restart", () =>
+it.live("syncs requested spaces to another client, catching up from revisions across reconnects and a restart", () =>
   Effect.gen(function* () {
     const dir = (yield* tmpdirScoped("opencode-kv-api-")).path
     const boot = ServerFetch.make({
@@ -69,11 +69,11 @@ it.live("streams snapshots and later writes of requested spaces to another clien
           expect(await reader.next()).toEqual({ type: "server.connected", data: {} })
           expect(await reader.next()).toEqual({
             type: "experimental.kv.snapshot",
-            data: { space: "app", entries: [{ key: "draft/1", value: { text: "hi", n: [1, null] } }] },
+            data: { space: "app", revision: 1, entries: [{ key: "draft/1", value: { text: "hi", n: [1, null] } }] },
           })
           expect(await reader.next()).toEqual({
             type: "experimental.kv.snapshot",
-            data: { space: "empty", entries: [] },
+            data: { space: "empty", revision: 0, entries: [] },
           })
           expect(await plain.next()).toEqual({ type: "server.connected", data: {} })
 
@@ -83,11 +83,11 @@ it.live("streams snapshots and later writes of requested spaces to another clien
           await writer.session.create({ location: { directory: dir } })
           expect(await reader.next()).toEqual({
             type: "experimental.kv.updated",
-            data: { space: "app", key: "draft/2", value: 2 },
+            data: { space: "app", key: "draft/2", value: 2, revision: 2 },
           })
           expect(await reader.next()).toEqual({
             type: "experimental.kv.deleted",
-            data: { space: "app", key: "draft/1" },
+            data: { space: "app", key: "draft/1", revision: 3 },
           })
           // `types` still selects the other events, and a plain subscriber sees no kv events at all.
           expect((await reader.next()).type).toBe("session.created")
@@ -95,16 +95,45 @@ it.live("streams snapshots and later writes of requested spaces to another clien
           await reader.close()
           await plain.close()
 
-          const reconnected = await subscribe(handler, "experimental.kv=app")
+          // Offline: repeated updates, a key created and deleted, and deletes of already deleted keys.
+          await writer.experimental.kv.set({ space: "app", key: "draft/2", value: 3 })
+          await writer.experimental.kv.set({ space: "app", key: "draft/2", value: 4 })
+          await writer.experimental.kv.set({ space: "app", key: "draft/3", value: "x" })
+          await writer.experimental.kv.delete({ space: "app", key: "draft/3" })
+          await writer.experimental.kv.delete({ space: "app", key: "draft/3" })
+          await writer.experimental.kv.delete({ space: "app", key: "draft/1" })
+
+          // One stream mixes a delta, an unusable cursor, an empty delta and a cursor this server never issued.
+          const reconnected = await subscribe(
+            handler,
+            "experimental.kv=app:3&experimental.kv=other:x&experimental.kv=empty:0&experimental.kv=ahead:99",
+          )
           await reconnected.next()
           expect(await reconnected.next()).toEqual({
+            type: "experimental.kv.delta",
+            data: { space: "app", revision: 7, entries: [{ key: "draft/2", value: 4 }], deleted: ["draft/3"] },
+          })
+          expect(await reconnected.next()).toEqual({
             type: "experimental.kv.snapshot",
-            data: { space: "app", entries: [{ key: "draft/2", value: 2 }] },
+            data: { space: "other", revision: 2, entries: [{ key: "draft/1", value: "unseen" }] },
+          })
+          expect(await reconnected.next()).toEqual({
+            type: "experimental.kv.delta",
+            data: { space: "empty", revision: 0, entries: [], deleted: [] },
+          })
+          expect(await reconnected.next()).toEqual({
+            type: "experimental.kv.snapshot",
+            data: { space: "ahead", revision: 0, entries: [] },
+          })
+          await writer.experimental.kv.set({ space: "app", key: "draft/4", value: true })
+          expect(await reconnected.next()).toEqual({
+            type: "experimental.kv.updated",
+            data: { space: "app", key: "draft/4", value: true, revision: 8 },
           })
           await reconnected.close()
 
           expect((await subscribe(handler, "experimental.kv=app", {})).status).toBe(401)
-          expect((await subscribe(handler, "experimental.kv=a:b")).status).toBe(400)
+          expect((await subscribe(handler, "experimental.kv=a/b:1")).status).toBe(400)
           await expect(client(handler).experimental.kv.set({ space: "app", key: "x", value: 1 })).rejects.toMatchObject(
             {
               _tag: "UnauthorizedError",
@@ -124,15 +153,20 @@ it.live("streams snapshots and later writes of requested spaces to another clien
 
     const handler = yield* boot
     yield* Effect.promise(async () => {
-      const reader = await subscribe(handler, "experimental.kv=app&experimental.kv=other")
+      const reader = await subscribe(handler, "experimental.kv=app:7&experimental.kv=other:2")
       await reader.next()
       expect(await reader.next()).toEqual({
-        type: "experimental.kv.snapshot",
-        data: { space: "app", entries: [{ key: "draft/2", value: 2 }] },
+        type: "experimental.kv.delta",
+        data: { space: "app", revision: 8, entries: [{ key: "draft/4", value: true }], deleted: [] },
       })
       expect(await reader.next()).toEqual({
-        type: "experimental.kv.snapshot",
-        data: { space: "other", entries: [{ key: "draft/1", value: "unseen" }] },
+        type: "experimental.kv.delta",
+        data: { space: "other", revision: 2, entries: [], deleted: [] },
+      })
+      await client(handler, { authorization }).experimental.kv.delete({ space: "app", key: "draft/4" })
+      expect(await reader.next()).toEqual({
+        type: "experimental.kv.deleted",
+        data: { space: "app", key: "draft/4", revision: 9 },
       })
       await reader.close()
     })

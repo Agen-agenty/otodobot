@@ -51,9 +51,9 @@ const query = <const Definitions extends ReadonlyArray<Definition>>(definitions:
       description:
         "Only send events of these types, plus the initial server.connected event. When omitted, all events are sent.",
     }),
-    "experimental.kv": Schema.optional(Schema.ArrayEnsure(ClientKV.Space)).annotate({
+    "experimental.kv": Schema.optional(Schema.ArrayEnsure(ClientKV.Subscription)).annotate({
       description:
-        "Experimental: after server.connected, send one experimental.kv.snapshot per space, then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated in between. experimental.kv.* events reach only subscribers that request their space, whatever `types` says. Reconnect to get fresh snapshots.",
+        "Experimental: spaces to sync, each as `space` or `space:revision`. After server.connected, sends per space an experimental.kv.delta with the keys changed since that revision when it is one this server issued, otherwise an experimental.kv.snapshot; then every later experimental.kv.updated and experimental.kv.deleted in those spaces, with nothing missed or repeated. experimental.kv.* events reach only subscribers that request their space, whatever `types` says.",
     }),
   }).annotate({ identifier: "EventSubscribeQuery" })
 

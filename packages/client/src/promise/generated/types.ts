@@ -310,6 +310,8 @@ export type FormValue1 = string | number | boolean | Array<string>
 
 export type ClientKVSpace = string
 
+export type ClientKVRevision = number
+
 export type ClientKVKey = string
 
 export type ClientKVValue = string | number | boolean | Array<JsonValue> | { [x: string]: JsonValue }
@@ -2016,7 +2018,7 @@ export type ExperimentalKvUpdated = {
   metadata?: { [x: string]: any }
   type: "experimental.kv.updated"
   location?: LocationRef
-  data: { space: ClientKVSpace; key: ClientKVKey; value: ClientKVValue }
+  data: { space: ClientKVSpace; key: ClientKVKey; value: ClientKVValue; revision: ClientKVRevision }
 }
 
 export type ExperimentalKvDeleted = {
@@ -2025,7 +2027,7 @@ export type ExperimentalKvDeleted = {
   metadata?: { [x: string]: any }
   type: "experimental.kv.deleted"
   location?: LocationRef
-  data: { space: ClientKVSpace; key: ClientKVKey }
+  data: { space: ClientKVSpace; key: ClientKVKey; revision: ClientKVRevision }
 }
 
 export type SessionStatusUpdated = {
@@ -2301,7 +2303,16 @@ export type ExperimentalKvSnapshot = {
   metadata?: { [x: string]: any }
   type: "experimental.kv.snapshot"
   location?: LocationRef
-  data: { space: ClientKVSpace; entries: Array<ClientKVEntry> }
+  data: { space: ClientKVSpace; revision: ClientKVRevision; entries: Array<ClientKVEntry> }
+}
+
+export type ExperimentalKvDelta = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "experimental.kv.delta"
+  location?: LocationRef
+  data: { space: ClientKVSpace; revision: ClientKVRevision; entries: Array<ClientKVEntry>; deleted: Array<ClientKVKey> }
 }
 
 export type ScheduleWhen = ScheduleWhenIn | ScheduleWhenAt | ScheduleWhenEvery | ScheduleWhenCron
@@ -3009,6 +3020,7 @@ export type V2Event =
   | WebsearchUpdated
   | ArtifactUpdated
   | ExperimentalKvSnapshot
+  | ExperimentalKvDelta
   | ExperimentalKvUpdated
   | ExperimentalKvDeleted
   | SessionStatusUpdated
@@ -4511,6 +4523,7 @@ export type EventSubscribeInput = {
         | "websearch.updated"
         | "artifact.updated"
         | "experimental.kv.snapshot"
+        | "experimental.kv.delta"
         | "experimental.kv.updated"
         | "experimental.kv.deleted"
         | "session.status"
