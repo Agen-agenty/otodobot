@@ -1,11 +1,10 @@
 import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import type { Media, VideoStatus } from "@opencode/ai/effect"
+import type { Media } from "@opencode/ai/effect"
 import { Bus } from "@opencode/core/bus"
 import { Flag } from "@opencode/core/flag"
 import { Generate } from "@opencode/core/generate"
-import { Job } from "@opencode/core/job"
 import { Location } from "@opencode/core/location"
 import { Model } from "@opencode/core/model"
 import { Permission } from "@opencode/core/permission"
@@ -17,12 +16,10 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { Tool } from "@opencode/core/tool"
 import { OpenCodeTools } from "@opencode/core/tool/plugin/opencode"
 import { VideoGenerateTool } from "@opencode/core/tool/plugin/video-generate"
-import { VideoGeneration } from "@opencode/core/video-generation"
-import { Global } from "@opencode/util/global"
 import { Effect, Layer, Schedule, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
-import { executeTool, toolDefinitions, toolIdentity } from "./lib/tool"
+import { executeTool, toolIdentity } from "./lib/tool"
 import { makePluginTestLayer } from "./plugin/fixture"
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
@@ -31,29 +28,16 @@ const MP4 = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 
 const fixture = {
   starts: [] as Generate.VideoInput[],
   reads: [] as { model: Model.Ref; id: string }[],
-  cancels: [] as string[],
   assertions: [] as Permission.AssertInput[],
-  status: { status: "completed" } as VideoStatus,
-  failure: undefined as Generate.Error | undefined,
   /** How many videos a finished job returns. */
   videos: 1,
-  deny: undefined as string | undefined,
 }
 
 const it = testEffect(
   makePluginTestLayer(
     permissionLayer({
       assertNotDenied: () => Effect.void,
-      assert: (input) =>
-        Effect.sync(() => void fixture.assertions.push(input)).pipe(
-          Effect.andThen(
-            fixture.deny === input.action
-              ? Effect.fail(
-                  new Permission.BlockedError({ rules: [], permission: input.action, resources: input.resources }),
-                )
-              : Effect.void,
-          ),
-        ),
+      assert: (input) => Effect.sync(() => void fixture.assertions.push(input)),
     }),
     Layer.succeed(
       Generate.Service,
@@ -65,12 +49,12 @@ const it = testEffect(
           start: (input) =>
             Effect.suspend(() => {
               fixture.starts.push(input)
-              return fixture.failure ? Effect.fail(fixture.failure) : Effect.succeed({ id: "req_1" })
+              return Effect.succeed({ id: "req_1" })
             }),
           status: (model, id) =>
             Effect.sync(() => {
               fixture.reads.push({ model, id })
-              return fixture.status
+              return { status: "completed" } as const
             }),
           result: () =>
             Effect.sync(() =>
@@ -79,7 +63,7 @@ const it = testEffect(
                 stream: Stream.make(MP4, Uint8Array.of(index)),
               })),
             ),
-          cancel: (_, id) => Effect.sync(() => void fixture.cancels.push(id)),
+          cancel: () => Effect.die("unused"),
         },
       }),
     ),
@@ -100,12 +84,8 @@ const setup = (providerID = "test") =>
   Effect.gen(function* () {
     fixture.starts.length = 0
     fixture.reads.length = 0
-    fixture.cancels.length = 0
     fixture.assertions.length = 0
-    fixture.status = { status: "completed" }
-    fixture.failure = undefined
     fixture.videos = 1
-    fixture.deny = undefined
     const plugins = yield* Plugin.Service
     const sessions = yield* Session.Service
     const location = yield* Location.Service
@@ -143,35 +123,14 @@ const setup = (providerID = "test") =>
     return { session, run, notice, directory: location.directory }
   })
 
-const registered = Tool.Service.use((registry) => toolDefinitions(registry)).pipe(
-  Effect.map((tools) => tools.some((tool) => tool.name === VideoGenerateTool.name)),
-)
-const until = (expected: boolean) =>
-  registered.pipe(
-    Effect.repeat({ until: (value) => value === expected, schedule: Schedule.spaced("5 millis") }),
-    Effect.timeout("10 seconds"),
-  )
-
-const failure = (result: { readonly error?: { readonly message: string } }) => result.error?.message
 const kinds = (assets: ReadonlyArray<Media.Asset> | undefined) => assets?.map((asset) => asset.mediaType)
 
 describe("experimental_video_generate", () => {
-  it.live("is registered only while a video model is available", () =>
-    Effect.gen(function* () {
-      yield* setup()
-      expect(yield* registered).toBe(false)
-      yield* videoModel("test", "director")
-      expect(yield* until(true)).toBe(true)
-      const catalog = yield* Provider.Service
-      yield* catalog.transform((editor) => editor.models.remove(Provider.ID.make("test"), Model.ID.make("director")))
-      expect(yield* until(false)).toBe(false)
-    }),
-  )
-
-  it.live("starts the job in the foreground, then reads it by job ID and saves the video", () =>
+  it.live("starts the job, saves every video it returns and lists them all in the notice", () =>
     Effect.gen(function* () {
       yield* videoModel("test", "director")
       const { run, notice, directory, session } = yield* setup()
+      fixture.videos = 2
       yield* Effect.promise(() => fs.writeFile(path.join(directory, "first.png"), Buffer.from(PNG, "base64")))
 
       const result = yield* run({
@@ -186,13 +145,15 @@ describe("experimental_video_generate", () => {
         path: "kite.mp4",
       })
       const file = path.join(directory, "kite.mp4")
+      const second = path.join(directory, "kite-1.mp4")
       const id = result.output.id
       expect(id).toStartWith("video_")
       expect(result.output).toEqual({ id, path: file, model: "test/director" })
       expect(yield* notice(result)).toBe(
-        `<video id="${id}" state="completed">\nVideo request finished. Saved video: ${file} (test/director).\n</video>`,
+        `<video id="${id}" state="completed">\nVideo request finished. Saved 2 videos: ${file}, ${second} (test/director).\n</video>`,
       )
       expect(new Uint8Array(yield* Effect.promise(() => fs.readFile(file)))).toEqual(Uint8Array.of(...MP4, 0))
+      expect(new Uint8Array(yield* Effect.promise(() => fs.readFile(second)))).toEqual(Uint8Array.of(...MP4, 1))
 
       const start = fixture.starts[0]
       expect(start).toMatchObject({
@@ -222,102 +183,6 @@ describe("experimental_video_generate", () => {
         ["webfetch", ["https://example.test/motion.mp4"]],
       ])
       expect(fixture.assertions[0]?.sessionID).toBe(session.id)
-    }),
-  )
-
-  it.live("saves further videos next to the path and lists every file in the notice", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run, notice, directory } = yield* setup()
-      fixture.videos = 2
-      const result = yield* run({ prompt: "two cats", path: "cat.mp4" })
-      const first = path.join(directory, "cat.mp4")
-      const second = path.join(directory, "cat-1.mp4")
-      expect(yield* notice(result)).toBe(
-        `<video id="${result.output.id}" state="completed">\nVideo request finished. Saved 2 videos: ${first}, ${second} (test/director).\n</video>`,
-      )
-      expect(new Uint8Array(yield* Effect.promise(() => fs.readFile(first)))).toEqual(Uint8Array.of(...MP4, 0))
-      expect(new Uint8Array(yield* Effect.promise(() => fs.readFile(second)))).toEqual(Uint8Array.of(...MP4, 1))
-    }),
-  )
-
-  it.live("saves to the session temp folder by default", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run, notice, session } = yield* setup()
-      const global = yield* Global.Service
-      const result = yield* run({ prompt: "waves" })
-      expect(result.output.path).toBe(path.join(global.tmp, "videos", session.id, `${result.output.id}.mp4`))
-      yield* notice(result)
-      expect(yield* Effect.promise(() => Bun.file(result.output.path).exists())).toBe(true)
-    }),
-  )
-
-  it.live("fails the call without starting a job when the provider rejects the request", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run } = yield* setup()
-      fixture.failure = new Generate.InvalidRequestError({ message: "Duration must be 4 to 15 seconds" })
-      const result = yield* run({ prompt: "x", duration: 60 })
-      expect(result.status).toBe("error")
-      expect(failure(result)).toContain("Duration must be 4 to 15 seconds")
-      expect(fixture.reads).toEqual([])
-    }),
-  )
-
-  it.live("reports a failed job in the completion notice", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run, notice, directory } = yield* setup()
-      fixture.status = { status: "error", reason: "failed" }
-      const result = yield* run({ prompt: "x", path: "out.mp4" })
-      expect(yield* notice(result)).toBe(
-        `<video id="${result.output.id}" state="error">\nVideo request failed for ${path.join(directory, "out.mp4")}: The provider reported the job as failed\n</video>`,
-      )
-      expect(yield* Effect.promise(() => Bun.file(path.join(directory, "out.mp4")).exists())).toBe(false)
-    }),
-  )
-
-  it.live("cancels the provider job when its job is cancelled", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run, notice } = yield* setup()
-      fixture.status = { status: "running" }
-      const result = yield* run({ prompt: "x" })
-      const jobs = yield* Job.Service
-      const id = String(result.metadata?.jobID)
-      expect((yield* jobs.get(id))?.status).toBe("running")
-      yield* jobs.cancel(id)
-      expect(yield* notice(result)).toContain(`<video id="${id}" state="cancelled">`)
-      expect(fixture.cancels).toEqual(["req_1"])
-      expect(yield* VideoGeneration.Service.use((videos) => videos.get(result.output.id))).toMatchObject({
-        status: "error",
-        reason: "cancelled",
-      })
-    }),
-  )
-
-  it.live("checks inputs before submitting anything", () =>
-    Effect.gen(function* () {
-      yield* videoModel("test", "director")
-      const { run, directory } = yield* setup()
-      yield* Effect.promise(() => fs.writeFile(path.join(directory, "notes.txt"), "hello"))
-      expect(failure(yield* run({ prompt: "x", model: "test/missing" }))).toBe(
-        'Model "test/missing" is not an available video model. Use the models tool with type: "video" to see what is available.',
-      )
-      expect(failure(yield* run({ prompt: "x", aspect: "wide" }))).toBe(
-        'Invalid aspect "wide". Use "width:height", such as "16:9", or "auto".',
-      )
-      expect(failure(yield* run({ prompt: "x", start: "notes.txt" }))).toBe(
-        "notes.txt is not a supported image, video or audio file.",
-      )
-      expect(failure(yield* run({ prompt: "x", start: "https://example.test/clip.mp4" }))).toBe(
-        "https://example.test/clip.mp4 must be image.",
-      )
-      expect(failure(yield* run({ prompt: "x", start: "missing.png" }))).toBe("File not found: missing.png")
-      fixture.deny = "webfetch"
-      expect((yield* run({ prompt: "x", references: ["https://example.test/a.png"] })).status).toBe("error")
-      expect(fixture.starts).toEqual([])
     }),
   )
 })

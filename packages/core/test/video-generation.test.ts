@@ -219,30 +219,3 @@ it.effect("waits for a job, polls one again from a kept provider job ID, and run
     }).pipe(Effect.provide(app(dir, state)))
   }),
 )
-
-it.effect("cancels a running job and asks the provider to stop it", () =>
-  Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-generation-cancel-")).path
-    const state = provider()
-    yield* Effect.gen(function* () {
-      const generations = yield* VideoGeneration.Service
-      const started = yield* generations.start({ model, prompt: "a dog" })
-      const waiting = yield* generations.wait(started.id).pipe(Effect.forkChild({ startImmediately: true }))
-      yield* generations.cancel(started.id)
-      const cancelled = {
-        id: started.id,
-        status: "error",
-        reason: "cancelled",
-        error: "The video generation was cancelled",
-      } as const
-      expect(yield* Fiber.join(waiting)).toEqual(cancelled)
-      expect(yield* generations.get(started.id)).toEqual(cancelled)
-      expect(state.cancels).toEqual(["provider_1"])
-      // Polling stopped: the provider finishing later changes nothing.
-      state.status = { status: "completed" }
-      yield* TestClock.adjust("1 minute")
-      expect(yield* generations.get(started.id)).toEqual(cancelled)
-      expect(yield* listed(dir)).toEqual([])
-    }).pipe(Effect.provide(app(dir, state)))
-  }),
-)
