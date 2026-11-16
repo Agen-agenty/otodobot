@@ -26,6 +26,7 @@ const generate = makeLocationNode({
         start: () => Effect.succeed({ id: "provider_1" }),
         status: () => Effect.succeed({ status: "completed" }),
         result: () => Effect.succeed([{ mime: "video/mp4", stream: Stream.make(video) }]),
+        cancel: () => Effect.void,
       },
     }),
   ),
@@ -70,7 +71,8 @@ it.live("generates a video in the background and serves its blob with Range and 
     })
     expect(started.status).toBe(200)
     const { data } = (yield* Effect.promise(() => started.json())) as { data: { id: string; status: string } }
-    expect(data).toMatchObject({ status: "running" })
+    // The provider's job ID stays on the server.
+    expect(data).toEqual({ id: data.id, status: "running" })
     expect(data.id.startsWith("video_")).toBe(true)
 
     const completed = yield* eventually(

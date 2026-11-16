@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { expect } from "bun:test"
-import { type Duration, Effect, Layer, Stream } from "effect"
+import { type Duration, Effect, Fiber, Layer, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import type { VideoStatus } from "@opencode/ai/effect"
 import { Database } from "@opencode/core/database/database"
@@ -10,8 +10,10 @@ import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Generate } from "@opencode/core/generate"
 import { BlobStore } from "@opencode/core/blob-store"
 import { VideoGeneration } from "@opencode/core/video-generation"
+import { Location } from "@opencode/core/location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
-import type { VideoID, VideoJob } from "@opencode/schema/generate"
+import { AbsolutePath } from "@opencode/core/schema"
+import { VideoID, type VideoJob } from "@opencode/schema/generate"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -37,6 +39,9 @@ const provider = () => ({
   start: Effect.succeed({ id: "provider_1" }) as Effect.Effect<{ readonly id: string }, Generate.Error>,
   /** Status reads that fail before one succeeds. */
   failReads: 0,
+  /** The provider job IDs read, and the Location directory each read ran in. */
+  reads: [] as { id: string; directory: string }[],
+  cancels: [] as string[],
 })
 type State = ReturnType<typeof provider>
 
@@ -51,23 +56,28 @@ const app = (dir: string, state: State) =>
       Generate.node.replace(
         makeLocationNode({
           service: Generate.Service,
-          layer: Layer.succeed(
+          layer: Layer.effect(
             Generate.Service,
-            Generate.Service.of({
-              text: () => Effect.die("unused"),
-              image: () => Effect.die("unused"),
-              decisions: () => Effect.die("unused"),
-              video: {
-                start: () => Effect.suspend(() => state.start),
-                status: () =>
-                  Effect.suspend(() =>
-                    state.failReads-- > 0 ? Effect.fail(providerError("reset")) : Effect.succeed(state.status),
-                  ),
-                result: () => Effect.sync(() => state.results.map((stream) => ({ mime: "video/mp4", stream }))),
-              },
+            Effect.gen(function* () {
+              const location = yield* Location.Service
+              return Generate.Service.of({
+                text: () => Effect.die("unused"),
+                image: () => Effect.die("unused"),
+                decisions: () => Effect.die("unused"),
+                video: {
+                  start: () => Effect.suspend(() => state.start),
+                  status: (_, id) =>
+                    Effect.suspend(() => {
+                      state.reads.push({ id, directory: location.directory })
+                      return state.failReads-- > 0 ? Effect.fail(providerError("reset")) : Effect.succeed(state.status)
+                    }),
+                  result: () => Effect.sync(() => state.results.map((stream) => ({ mime: "video/mp4", stream }))),
+                  cancel: (_, id) => Effect.sync(() => void state.cancels.push(id)),
+                },
+              })
             }),
           ),
-          deps: [],
+          deps: [Location.node],
         }),
       ),
     ],
@@ -167,6 +177,72 @@ it.effect("reports the provider's failure reason, a job past its deadline and a 
       state.start = Effect.fail(providerError("bad", 400))
       const rejected = yield* generations.start({ model, prompt: "a crab" }).pipe(Effect.flip)
       expect(rejected).toMatchObject({ _tag: "Generate.ProviderRequestError", message: "bad" })
+    }).pipe(Effect.provide(app(dir, state)))
+  }),
+)
+
+it.effect("waits for a job, polls one again from a kept provider job ID, and runs in the requested Location", () =>
+  Effect.gen(function* () {
+    const dir = (yield* tmpdirScoped("opencode-generation-wait-")).path
+    const project = (yield* tmpdirScoped("opencode-generation-project-")).path
+    const state = provider()
+    yield* Effect.gen(function* () {
+      const generations = yield* VideoGeneration.Service
+      const started = yield* generations.start(
+        { model, prompt: "a cat" },
+        { location: Location.Ref.make({ directory: AbsolutePath.make(project) }) },
+      )
+      expect(started).toEqual({ id: started.id, status: "running", providerJobID: "provider_1" })
+      const waiting = yield* generations.wait(started.id).pipe(Effect.forkChild({ startImmediately: true }))
+      state.status = { status: "completed" }
+      yield* settled(started.id)
+      expect(yield* Fiber.join(waiting)).toMatchObject({
+        id: started.id,
+        status: "completed",
+        blobs: [{ bytes: mp4.length }],
+      })
+      expect(state.reads.every((read) => read.directory === project)).toBe(true)
+
+      // After a restart, the caller kept the provider job ID; the job is polled and stored under the same video ID.
+      const id = VideoID.create()
+      yield* generations.resume({ id, model, providerJobID: "provider_2" })
+      expect(yield* generations.wait(id)).toMatchObject({ id, status: "completed", blobs: [{ id: `${id}_0` }] })
+      expect(state.reads.at(-1)?.id).toBe("provider_2")
+      // A finished job is not polled again.
+      const reads = state.reads.length
+      yield* generations.resume({ id, model, providerJobID: "provider_2" })
+      expect(state.reads.length).toBe(reads)
+
+      expect(yield* generations.wait(VideoID.create()).pipe(Effect.flip)).toMatchObject({
+        _tag: "VideoGeneration.NotFoundError",
+      })
+    }).pipe(Effect.provide(app(dir, state)))
+  }),
+)
+
+it.effect("cancels a running job and asks the provider to stop it", () =>
+  Effect.gen(function* () {
+    const dir = (yield* tmpdirScoped("opencode-generation-cancel-")).path
+    const state = provider()
+    yield* Effect.gen(function* () {
+      const generations = yield* VideoGeneration.Service
+      const started = yield* generations.start({ model, prompt: "a dog" })
+      const waiting = yield* generations.wait(started.id).pipe(Effect.forkChild({ startImmediately: true }))
+      yield* generations.cancel(started.id)
+      const cancelled = {
+        id: started.id,
+        status: "error",
+        reason: "cancelled",
+        error: "The video generation was cancelled",
+      } as const
+      expect(yield* Fiber.join(waiting)).toEqual(cancelled)
+      expect(yield* generations.get(started.id)).toEqual(cancelled)
+      expect(state.cancels).toEqual(["provider_1"])
+      // Polling stopped: the provider finishing later changes nothing.
+      state.status = { status: "completed" }
+      yield* TestClock.adjust("1 minute")
+      expect(yield* generations.get(started.id)).toEqual(cancelled)
+      expect(yield* listed(dir)).toEqual([])
     }).pipe(Effect.provide(app(dir, state)))
   }),
 )

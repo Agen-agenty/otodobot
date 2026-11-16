@@ -69,7 +69,11 @@ export const GenerateHandler = HttpApiBuilder.group(Api, "server.generate", (han
       function* (request: { readonly payload: VideoRequest }) {
         yield* videoEnabled
         yield* awaitPlugins
-        return { data: yield* videos.start(request.payload).pipe(Effect.mapError(generateError)) }
+        const job = yield* videos
+          .start(VideoGeneration.fromRequest(request.payload))
+          .pipe(Effect.mapError(generateError))
+        // The provider's job ID stays on the server.
+        return { data: { id: job.id, status: job.status } }
       },
       Effect.provide(services),
       locationErrors,
