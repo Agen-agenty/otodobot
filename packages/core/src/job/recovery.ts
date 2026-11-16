@@ -1,3 +1,4 @@
+import { VideoID } from "@opencode/schema/generate"
 import { Schema } from "effect"
 import { SessionSchema } from "../session/schema.js"
 
@@ -13,6 +14,12 @@ const Image = Schema.Struct({
   path: Schema.String,
   model: Schema.String,
 })
+const Video = Schema.Struct({
+  kind: Schema.Literal("video"),
+  sessionID: SessionSchema.ID,
+  path: Schema.String,
+  model: Schema.String,
+})
 const subagent = {
   kind: Schema.Literal("subagent"),
   childSessionID: SessionSchema.ID,
@@ -20,7 +27,7 @@ const subagent = {
   description: Schema.String,
 }
 
-const OutstandingItem = Schema.Union([Shell, Image, Schema.Struct({ ...subagent, sessionID: SessionSchema.ID })])
+const OutstandingItem = Schema.Union([Shell, Image, Video, Schema.Struct({ ...subagent, sessionID: SessionSchema.ID })])
 export type OutstandingItem = typeof OutstandingItem.Type
 
 export const RecoverySchema = Schema.Union([
@@ -30,6 +37,13 @@ export const RecoverySchema = Schema.Union([
     ...subagent,
     parentSessionID: SessionSchema.ID,
     outstanding: Schema.optionalKey(Schema.Array(OutstandingItem)),
+  }),
+  Schema.Struct({
+    ...Video.fields,
+    /** The server's video ID, whose blobs hold the finished videos. */
+    videoID: VideoID,
+    /** The provider's job ID, so a restarted server can keep polling the same job. */
+    providerJobID: Schema.String,
   }),
 ])
 
