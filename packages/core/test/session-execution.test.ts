@@ -25,11 +25,19 @@ import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { Shell } from "@opencode/core/shell"
+import { BlobStore } from "@opencode/core/blob-store"
+import { Environment } from "@opencode/core/environment/index"
+import { Generate } from "@opencode/core/generate"
+import { VideoGeneration } from "@opencode/core/video-generation"
+import { VideoID } from "@opencode/schema/generate"
+import { FSUtil } from "@opencode/util/fs-util"
+import { Global } from "@opencode/util/global"
+import { tmpdirScoped } from "./fixture/tmpdir"
 import { Agent } from "@opencode/core/agent"
 import { ID } from "@opencode/core/model"
 import { Provider } from "@opencode/core/provider"
 import { daemonShells } from "./fixture/shell-daemon"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Schedule, Scope, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -1069,6 +1077,100 @@ describe("SessionRestart background recovery", () => {
         '<image id="image_running" state="cancelled">\nImage request for /tmp/running.png was cancelled because the server restarted.\n</image>',
       ])
       expect(yield* restarted.pendingBackground).toEqual([])
+    }),
+  )
+
+  it.live("delivers a finished video outcome and polls a running video again from its provider job ID", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const sessionID = Session.ID.make("ses_background_video")
+      yield* seedSessions(database, [sessionID])
+      const done = VideoID.create()
+      const running = VideoID.create()
+      const recovery = (videoID: VideoID, path: string) => ({
+        kind: "video" as const,
+        sessionID,
+        path,
+        model: "test/director",
+        videoID,
+        providerJobID: "req_1",
+      })
+      yield* jobs.start({
+        id: done,
+        type: "experimental_video_generate",
+        recovery: recovery(done, "/tmp/done.mp4"),
+        run: Effect.succeed("Video request finished. Saved video: /tmp/done.mp4 (test/director)."),
+      })
+      yield* jobs.background(done)
+      yield* jobs.wait({ id: done })
+      yield* jobs.start({
+        id: running,
+        type: "experimental_video_generate",
+        recovery: recovery(running, "/tmp/running.mp4"),
+        run: Effect.never,
+      })
+      yield* jobs.background(running)
+
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const reads: string[] = []
+      const generate = Layer.succeed(
+        Generate.Service,
+        Generate.Service.of({
+          text: () => Effect.die("unused"),
+          image: () => Effect.die("unused"),
+          decisions: () => Effect.die("unused"),
+          video: {
+            start: () => Effect.die("a recovered job must not be submitted again"),
+            status: (_, id) => Effect.sync(() => void reads.push(id)).pipe(Effect.as({ status: "completed" as const })),
+            result: () => Effect.succeed([{ mime: "video/mp4", stream: Stream.make(Uint8Array.of(1, 2, 3)) }]),
+            cancel: () => Effect.void,
+          },
+        }),
+      )
+      const directory = (yield* tmpdirScoped("opencode-video-restart-")).path
+      // The server's video service, polling through the Location of the recovered Session.
+      const videos = yield* Layer.buildWithScope(
+        AppNodeBuilder.build(LayerNode.group([VideoGeneration.node, BlobStore.node, FSUtil.node]), [
+          Global.node.replace(Global.layerWith({ data: directory, config: directory })),
+          LocationServiceMap.node.replace(
+            Layer.effect(
+              LocationServiceMap.Service,
+              // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+              LayerMap.make(
+                () => generate as unknown as Layer.Layer<LocationServices, FileSystem.DirectoryNotFoundError>,
+              ),
+            ),
+          ),
+        ]),
+        scope,
+      )
+      const driver = Environment.makeMemoryDriver()
+      const files = Environment.makeFiles(driver)
+      const location = Layer.mergeAll(
+        Layer.succeed(Environment.Service, Environment.Service.of({ files, spawner: driver.spawner })),
+        Layer.succeedContext(videos),
+      )
+      const context = yield* buildExecution(scope, () => Effect.void, undefined, restarted, undefined, location)
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+
+      // The running job is tracked again: the server polls the provider job by its kept ID and the video is copied.
+      yield* restarted.wait({ id: running })
+      const texts = yield* SessionInbox.list(database.db, sessionID).pipe(
+        Effect.map((inbox) => inbox.map((item) => (item.type === "synthetic" ? item.payload.text : ""))),
+        Effect.repeat({ until: (texts) => texts.length === 2, schedule: Schedule.spaced("5 millis") }),
+        Effect.timeout("10 seconds"),
+      )
+      expect(texts.toSorted()).toEqual(
+        [
+          `<video id="${done}" state="completed">\nVideo request finished. Saved video: /tmp/done.mp4 (test/director).\n</video>`,
+          `<video id="${running}" state="completed">\nVideo request finished. Saved video: /tmp/running.mp4 (test/director).\n</video>`,
+        ].toSorted(),
+      )
+      expect(reads).toEqual(["req_1"])
+      expect((yield* files.read("/tmp/running.mp4")).bytes).toEqual(Uint8Array.of(1, 2, 3))
     }),
   )
 
@@ -2115,6 +2217,8 @@ function buildExecution(
   options?: SessionRestart.Options,
   overrideJobs?: Job.Interface,
   shell?: Shell.Interface,
+  // Extra Location services, such as those a recovered video job continues with.
+  extra?: Layer.Layer<never>,
 ) {
   return Effect.gen(function* () {
     const database = yield* Database.Service
@@ -2148,10 +2252,11 @@ function buildExecution(
         () =>
           // The local execution test only needs the Session runner (and the Shell, if given) from the Location graph.
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-          (shell ? Layer.merge(runner, Layer.succeed(Shell.Service, shell)) : runner) as unknown as Layer.Layer<
-            LocationServices,
-            FileSystem.DirectoryNotFoundError
-          >,
+          Layer.mergeAll(
+            runner,
+            shell ? Layer.succeed(Shell.Service, shell) : Layer.empty,
+            extra ?? Layer.empty,
+          ) as unknown as Layer.Layer<LocationServices, FileSystem.DirectoryNotFoundError>,
       ),
     )
     return yield* Layer.buildWithScope(
