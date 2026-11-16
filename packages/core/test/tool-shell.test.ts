@@ -858,7 +858,7 @@ describe("ShellTool ordinary shell syntax", () => {
 })
 
 describe("ShellTool", () => {
-  it.live("moves shell into Code Mode with full_codemode and returns both parallel results", () =>
+  it.live("runs parallel Code Mode shells with the long default and notifies after a shorter timeout", () =>
     withTempDir((tmp) => {
       reset()
       return Effect.promise(() =>
@@ -869,9 +869,24 @@ describe("ShellTool", () => {
             Effect.gen(function* () {
               const snapshot = yield* registry.snapshot()
               expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["execute"])
-              expect(codeModeListings(snapshot.codeModeCatalog!).map((entry) => entry.path)).toEqual(["shell"])
-              const command = isWindows ? helloCommand : `${helloCommand}; sleep 0.1`
-              const inputs = ["one", "two"].map((text) => JSON.stringify({ command: command.replace("hello", text) }))
+              const listings = codeModeListings(snapshot.codeModeCatalog!)
+              expect(listings.map((entry) => entry.path)).toEqual(["shell"])
+              expect(listings[0]?.line).toContain("600000")
+              const timeouts: number[] = []
+              const hooks = yield* PluginHooks.Service
+              yield* hooks.register("shell", "create.before", (event) =>
+                Effect.sync(() => {
+                  timeouts.push(event.timeout)
+                }),
+              )
+              const bus = yield* Bus.Service
+              const notice = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+                Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+                Stream.runHead,
+                Effect.forkScoped({ startImmediately: true }),
+              )
+              const quick = JSON.stringify({ command: bodyExitCommand })
+              const long = JSON.stringify({ command: progressOverflowCommand(6, "release"), timeout: 10 })
               const result = yield* executeTool(registry, {
                 sessionID,
                 ...toolIdentity,
@@ -879,14 +894,32 @@ describe("ShellTool", () => {
                   type: "tool-call",
                   id: "call-parallel-shells",
                   name: "execute",
-                  input: { code: `return await Promise.all([tools.shell(${inputs[0]}), tools.shell(${inputs[1]})])` },
+                  input: { code: `return await Promise.all([tools.shell(${quick}), tools.shell(${long})])` },
                 },
               }).pipe(Effect.timeout("3 seconds"))
               expect(result.status).toBe("completed")
-              expect(JSON.parse(result.output.output)).toEqual([
-                { output: "one", exitCode: 0, wallTimeSeconds: expect.any(Number) },
-                { output: "two", exitCode: 0, wallTimeSeconds: expect.any(Number) },
-              ])
+              const [completed, running] = JSON.parse(result.output.output)
+              expect(completed).toEqual({
+                output: "body",
+                exitCode: 7,
+                status: "completed",
+                wallTimeSeconds: expect.any(Number),
+              })
+              expect(running).toEqual({
+                output: expect.stringContaining("did not finish within its timeout of 0.01 seconds"),
+                exitCode: null,
+                status: "running",
+                shellID: expect.stringMatching(/^sh_/),
+                pid: expect.any(Number),
+                outputPath: expect.any(String),
+                wallTimeSeconds: expect.any(Number),
+              })
+              expect(timeouts.toSorted((a, b) => a - b)).toEqual([10, 600_000])
+              yield* Effect.promise(() => Bun.write(path.join(tmp.path, "release"), ""))
+              expect((yield* Fiber.join(notice)).valueOrUndefined?.data.item.payload).toMatchObject({
+                text: expect.stringContaining("xxxxxx"),
+                metadata: { source: "shell", shellID: running.shellID, state: "completed", exit: 0 },
+              })
             }),
           ),
         ),
