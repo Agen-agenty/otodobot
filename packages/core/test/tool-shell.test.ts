@@ -880,7 +880,7 @@ describe("ShellTool", () => {
               )
               expect(pinned.map((entry) => entry.path)).toEqual(["shell"])
               expect(pinned[0]!.line).not.toContain("...")
-              expect(pinned[0]!.line).toContain("completed: the command exited")
+              expect(pinned[0]!.line).toContain("A result without shellID is final")
               expect(pinned[0]!.line).toContain("there are no separate stdout or stderr fields")
               const timeouts: number[] = []
               const hooks = yield* PluginHooks.Service
@@ -912,14 +912,13 @@ describe("ShellTool", () => {
               expect(completed).toEqual({
                 output: "body",
                 exitCode: 7,
-                status: "completed",
                 wallTimeSeconds: expect.any(Number),
               })
               expect(running).toEqual({
                 output: expect.stringContaining("did not finish within its timeout of 0.01 seconds"),
                 exitCode: null,
-                status: "running",
                 shellID: expect.stringMatching(/^sh_/),
+                pid: expect.any(Number),
                 outputPath: expect.any(String),
                 wallTimeSeconds: expect.any(Number),
               })
