@@ -52,6 +52,7 @@ import { offlineModels } from "./fixture/models"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
 import { Expected } from "./lib/session-message"
+import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
 import { codeModeListings, toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
 
 const sessionID = Session.ID.make("ses_shell_tool_test")
@@ -872,6 +873,15 @@ describe("ShellTool", () => {
               const listings = codeModeListings(snapshot.codeModeCatalog!)
               expect(listings.map((entry) => entry.path)).toEqual(["shell"])
               expect(listings[0]?.line).toContain("600000")
+              // Pinned: listed even when the catalog has no room for other tools, with an uncut description and the
+              // result contract in the field annotations.
+              const pinned = CodeModeCatalog.summarize(snapshot.codeModeCatalog!, { budget: 0 }).namespaces.flatMap(
+                (namespace) => namespace.entries,
+              )
+              expect(pinned.map((entry) => entry.path)).toEqual(["shell"])
+              expect(pinned[0]!.line).not.toContain("...")
+              expect(pinned[0]!.line).toContain("completed: the command exited")
+              expect(pinned[0]!.line).toContain("there are no separate stdout or stderr fields")
               const timeouts: number[] = []
               const hooks = yield* PluginHooks.Service
               yield* hooks.register("shell", "create.before", (event) =>
@@ -910,7 +920,6 @@ describe("ShellTool", () => {
                 exitCode: null,
                 status: "running",
                 shellID: expect.stringMatching(/^sh_/),
-                pid: expect.any(Number),
                 outputPath: expect.any(String),
                 wallTimeSeconds: expect.any(Number),
               })
