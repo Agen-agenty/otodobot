@@ -97,6 +97,26 @@ This is used internally and can be invoked using `@general` in messages.
 
 Learn more about [agents](https://opencode.ai/docs/agents).
 
+### Server operator agent
+
+This fork includes a project-local `operator` agent for day-to-day server operations
+in this workspace (n8n, embedding server, Infinity DB, CLI maintenance, and git/release
+tasks). It starts every task with `/root/infinity-n8n/status.sh`, reads logs before
+restarting anything, and asks for confirmation before mutating commands.
+
+```bash
+opencode run --agent operator "cek status server"
+```
+
+The `/server` slash command is a shortcut for the same check:
+
+```text
+/server
+```
+
+The agent definition lives in `.opencode/agent/operator.md`; its permissions and step
+budget are registered in `.opencode/opencode.jsonc`.
+
 ### Documentation
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
